@@ -1,4 +1,5 @@
 # parallized across the full dataset. 
+# run in rapid-scanpy env 
 import numpy as np
 import pandas as pd
 import glob
@@ -30,6 +31,10 @@ def getSomaTranscript_segm(donorID):
 
     # Load the adata object 
     adata = anndata.read_h5ad(r'/mnt/xuisebnas2/Lab/Bereket_SEA_AD_analysis/SEA_AD_dataset/combined_anndata_object/SEAAD_MTG_MERFISH.2024-12-11.h5ad')
+    # add the laminar annotation 
+    GMM_layer_annot = pd.read_csv(r'/mnt/xuisebnas2/Lab/Bereket_SEA_AD_analysis/analysis_result/cellular_comunity_cluster/GMM_based_layerAnnot.csv', index_col=0)
+    GMM_layer_annot.index = GMM_layer_annot.index.astype(str)
+    adata.obs = adata.obs.join(GMM_layer_annot['layer_final'])
     adata =  adata[~adata.obs.duplicated(['Specimen Barcode', 'Cell ID'])].copy() # remove the duplicated cells. 
     
     # Normalize the expression matrix -- log1p normalization 
@@ -62,15 +67,15 @@ def getSomaTranscript_segm(donorID):
             meanDH = np.mean(subadata[:,all_genes][subadata.obs['Subclass'] == e1].X,axis=0) - mean_all
 
             # sample cells across the layers 
-            layers = set(subadata.obs['layer_annotation_CC']) # layer annotation using Celluar community analysis
+            layers = set(subadata.obs['layer_final']).difference(['unassigned']) # layer annotation using Celluar community analysis
             ibest_cells = []
             for ly in layers:
-                iindex = np.flatnonzero((subadata.obs['layer_annotation_CC'] == ly) & (subadata.obs['Subclass'] == e1))
+                iindex = np.flatnonzero((subadata.obs['layer_final'] == ly) & (subadata.obs['Subclass'] == e1))
                 # sameples max of 100 cells from each layer 
                 rng = np.random.default_rng(seed=42) 
                 NUM_CELLS = np.minimum(100,len(iindex)) 
                 iindex = rng.choice(iindex, size=NUM_CELLS, replace=False)
-                ibest_cells.append(subadata.obs['Cell ID'][iindex])
+                ibest_cells.append(subadata.obs['Cell ID'].iloc[iindex])
             ibest_cells = np.hstack(ibest_cells).tolist()
 
             for icellSEL in tqdm(ibest_cells, desc = f'{e1}:transcript density clustering'):
@@ -157,14 +162,12 @@ def getSomaTranscript_segm(donorID):
                                     genes_all = genes_all, # all genes 
                                     Xall_df = Xall_df,
                                     pix_size = [1,1,1.5],
-
                                     allow_pickle = True
                                     )
             
 
 if __name__ == '__main__':
     list_donors = [fl for fl in os.listdir(ROOT_DATA_PATH) if (fl.startswith('H')) and fl != 'H20.33.002']
-    
     # donors to skip 
     with mp.Pool(processes=3) as pool:
         pool.map(getSomaTranscript_segm, list_donors)
