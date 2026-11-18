@@ -131,8 +131,6 @@ def process_sections(task):
         return
     out = f'{SAVE_ROOT_PATH}/density_based_clustering_fulldataset_supertype/{donorID}/{speciemenID}.parquet'
     os.makedirs(os.path.dirname(out),exist_ok=True)
-    import pdb
-    pdb.set_trace()
     res = pd.concat(ds_result, ignore_index = True)
     res['global_z'] *=1.5 # multiply by 1.5 to change to microns. 
     res[['supertype','set']] = res[['supertype','set']].astype('category')
