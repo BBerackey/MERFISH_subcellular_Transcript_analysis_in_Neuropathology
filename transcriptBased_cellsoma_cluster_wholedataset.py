@@ -38,13 +38,12 @@ def process_sections(task):
     fov_groups = dict(tuple(ds.groupby('fov', sort = False)))
     cell_fovs = ds[ds['cell_id'] != -1].groupby('cell_id')['fov'].unique().to_dict()
     # for each cell type compute the transcript based somatic clustering 
+    ds_result = [] # full dataframe, subset of detected transcript 
     for e1 in task['cells']:
         ibest_cells = task['cells'][e1] # cells sampled across layers 
         ibest_genes = task['genes'][e1] # genes that are differentially expressed in the cell 
         for icellSEL in tqdm(ibest_cells, desc = f'{e1}:transcript density clustering',disable=True):
             try:
-                SAVE_PATH = SAVE_ROOT_PATH + os.sep + 'density_based_clustering_fulldataset' + os.sep +  f'{donorID}' + os.sep + speciemenID + os.sep + f'{e1.replace("/","_")}_{icellSEL}.npz'
-                os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True) # create the required folder
                 # get the detected transcripts within the fov associated with the cell 
                 fovs = cell_fovs.get(int(icellSEL),[])
                 if len(fovs) == 0:
@@ -118,22 +117,27 @@ def process_sections(task):
                 Xall = Xall[kpf,:]
                 genes_all = genes[kpf]
                 Xall_df = fov_ds[kpf]
-
-                # save the result 
-                np.savez_compressed(
-                        SAVE_PATH,
-                        X_somatic = X, # segmetnation based on somatic genes 
-                        genes_somatic_enr = genes[keep_for_dbscan][best == lab], # somatic enriched genes
-                        X_df = Xall_kp_df,  # transcript df
-                        Xall = Xall, # segmentation based on all genes 
-                        genes_all = genes_all, # all genes 
-                        Xall_df = Xall_df,
-                        pix_size = [1,1,1.5],
-                        allow_pickle = True
-                        )
+                # -----------------------
+                # prepare as a dataframe 
+                ds_result.append(Xall_kp_df.assign(cell=int(icellSEL), supertype=e1,set='somatic_ds'))
+                ds_result.append(Xall_df.assign(cell=int(icellSEL), supertype=e1,set='all_ds'))
+                
             except Exception as e:
                 print(f'FAILED {donorID}/{speciemenID} {e1}:{icellSEL} -> {e!r}', flush=True)  
                 continue  
+    # save result as a parquet file 
+    if not ds_result:
+        print(f'No results for {donorID}/{speciemenID}', flush=True)
+        return
+    out = f'{SAVE_ROOT_PATH}/density_based_clustering_fulldataset_supertype/{donorID}/{speciemenID}.parquet'
+    os.makedirs(os.path.dirname(out),exist_ok=True)
+    import pdb
+    pdb.set_trace()
+    res = pd.concat(ds_result, ignore_index = True)
+    res['global_z'] *=1.5 # multiply by 1.5 to change to microns. 
+    res[['supertype','set']] = res[['supertype','set']].astype('category')
+    res.to_parquet(out, index = False)
+    print(f'saved {out}: {res["cell"].nunique()} cells, {len(res)} rows', flush=True)
         
 def prepare_tasks():
     """
@@ -152,7 +156,7 @@ def prepare_tasks():
     sc.pp.normalize_total(adata, target_sum = np.median(total_count))
     sc.pp.log1p(adata)
     # cell type 
-    celltype_list = list(set(adata.obs['Subclass']))
+    celltype_list = list(set(adata.obs['Supertype']))
     all_genes = np.asarray(adata.var_names)
     
     # Get the combination of speciemen and donor-id 
@@ -171,7 +175,7 @@ def prepare_tasks():
             # sample cells from each layer 
             ibest_cells_ = []
             for lyr in layers:
-                iindex = np.flatnonzero((sub_obs['layer_gmm'] ==lyr).values & (sub_obs['Subclass'] ==e1).values)
+                iindex = np.flatnonzero((sub_obs['layer_gmm'] ==lyr).values & (sub_obs['Supertype'] ==e1).values)
                 # sample max of 100 cells from each layer 
                 rng = np.random.default_rng(seed=42)
                 NUM_CELLS = np.minimum(100,len(iindex))
@@ -183,7 +187,7 @@ def prepare_tasks():
                 continue
             ibest_cells[e1] = np.hstack(ibest_cells_).tolist()
             # get the list of differentially expressed genes in the cell-type 
-            meanDH = Xs[(sub_obs['Subclass'] == e1).values].mean(0) - mean_all
+            meanDH = Xs[(sub_obs['Supertype'] == e1).values].mean(0) - mean_all
             ibest_genes[e1] = all_genes[meanDH > 0]
         tasks.append({'donor':donor_,
                       'specimen':specimen_,
@@ -197,6 +201,9 @@ def prepare_tasks():
 if __name__ == '__main__':
     
     tasks = prepare_tasks()
+    # save the tasks, 
+    pd.to_pickle(tasks,SAVE_ROOT_PATH + os.sep + 'process_tasks.pkl')
     print('Running tasks...')
     with mp.Pool(processes=8,maxtasksperchild=1) as pool:
         pool.map(process_sections, tasks, chunksize=1)
+    print('DONE!')
